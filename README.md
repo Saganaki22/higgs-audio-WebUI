@@ -11,10 +11,25 @@ Generate high-quality speech from text with voice cloning, longform generation, 
 <img width="2296" height="1260" alt="image" src="https://github.com/user-attachments/assets/5d12b595-c090-4943-bf33-89577e967e73" />
 </div>
 
-| Video Name             | Preview |
-|------------------------|---------|
-| Multi-Speaker Example | <video width="100" height="100" controls><source src="https://github.com/user-attachments/assets/ca267168-52cd-48f8-8713-5fd36ad5bf62" type="video/mp4"></video> |
-| Long-Form Example     | <video width="100" height="100" controls><source src="https://github.com/user-attachments/assets/665957f5-a874-4805-970d-1e8e061b30b9" type="video/mp4"></video> |
+Multi-Speaker Example
+
+
+
+
+https://github.com/user-attachments/assets/2eef22c0-f905-4099-b60a-70e2d0c6510b
+
+
+
+
+Long-Form Example
+
+
+
+
+https://github.com/user-attachments/assets/efb710f8-52a9-41e6-918a-68dc01d4248f
+
+
+
 
 
 ---
