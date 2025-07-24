@@ -1,0 +1,1 @@
+Want to level up your Python skills?  Remember to use descriptive variable names,  keep function short and test your code regularly.  Good coding practices make debugging a breeze.
