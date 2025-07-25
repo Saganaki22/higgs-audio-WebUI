@@ -12,7 +12,6 @@ import time
 from datetime import datetime
 from pydub import AudioSegment
 from pydub.utils import which
-import warnings
 
 # Whisper for auto-transcription
 try:
@@ -271,7 +270,11 @@ def process_uploaded_audio(uploaded_audio, force_mono=False):
     if uploaded_audio is None:
         raise ValueError("No audio uploaded")
     
-    sample_rate, audio_data = uploaded_audio
+    # Handle both tuple and individual components
+    if isinstance(uploaded_audio, tuple) and len(uploaded_audio) == 2:
+        sample_rate, audio_data = uploaded_audio
+    else:
+        raise ValueError("Invalid uploaded audio format - expected (sample_rate, audio_data) tuple")
     
     # If audio_data is already numpy array from Gradio
     if isinstance(audio_data, np.ndarray):
@@ -319,16 +322,18 @@ def enhanced_save_temp_audio_fixed(uploaded_voice, force_mono=False):
     Enhanced version that replaces the original save_temp_audio_fixed function
     Preserves stereo unless force_mono=True
     """
-    if uploaded_voice is None or len(uploaded_voice) != 2:
-        raise ValueError("Invalid uploaded voice format")
+    if uploaded_voice is None:
+        raise ValueError("No uploaded voice provided")
     
-    sample_rate, audio_data = uploaded_voice
-    
-    # Process the uploaded audio
-    processed_audio, processed_rate = process_uploaded_audio(uploaded_voice, force_mono)
-    
-    # Save to temporary file
-    return save_temp_audio_robust(processed_audio, processed_rate, force_mono)
+    # Handle both tuple and individual components properly
+    if isinstance(uploaded_voice, tuple) and len(uploaded_voice) == 2:
+        # Process the uploaded audio
+        processed_audio, processed_rate = process_uploaded_audio(uploaded_voice, force_mono)
+        
+        # Save to temporary file
+        return save_temp_audio_robust(processed_audio, processed_rate, force_mono)
+    else:
+        raise ValueError("Invalid uploaded voice format - expected (sample_rate, audio_data) tuple")
 
 def load_audio_file_robust(file_path, target_sample_rate=24000):
     """
@@ -395,7 +400,7 @@ def get_cache_key(text, voice_ref=None, temperature=0.3):
     """Generate cache key for audio generation"""
     import hashlib
     key_str = f"{text}_{voice_ref}_{temperature}"
-    return hashlib.md5(key_str.encode()).hexdigest()
+    return hashlib.sha256(key_str.encode()).hexdigest()
 
 # Create output directories - simplified
 def create_output_directories():
@@ -534,17 +539,30 @@ def initialize_model():
 
 def initialize_whisper():
     global whisper_model
+    global WHISPER_AVAILABLE
     if whisper_model is None and WHISPER_AVAILABLE:
         try:
             # Try faster-whisper first
-            from faster_whisper import WhisperModel
-            whisper_model = WhisperModel("base", device="cuda" if torch.cuda.is_available() else "cpu")
+            whisper_model = WhisperModel("large-v3", device="cuda" if torch.cuda.is_available() else "cpu")
             print("✅ Loaded faster-whisper model")
         except ImportError:
             # Fallback to openai-whisper
             import whisper
-            whisper_model = whisper.load_model("base")
+            whisper_model = whisper.load_model("large")
             print("✅ Loaded openai-whisper model")
+        except Exception as e:
+            print(f"⚠️ Failed to load whisper model: {e}")
+            # Try base model as fallback
+            try:
+                if 'WhisperModel' in globals():
+                    whisper_model = WhisperModel("base", device="cuda" if torch.cuda.is_available() else "cpu")
+                else:
+                    import whisper
+                    whisper_model = whisper.load_model("base")
+                print("✅ Loaded whisper base model as fallback")
+            except Exception as e2:
+                print(f"❌ Failed to load any whisper model: {e2}")
+                WHISPER_AVAILABLE = False
 
 def transcribe_audio(audio_path):
     """Transcribe audio file to text using Whisper"""
@@ -554,14 +572,20 @@ def transcribe_audio(audio_path):
     try:
         initialize_whisper()
         
-        if 'faster_whisper' in str(type(whisper_model)):
-            # Using faster-whisper
-            segments, info = whisper_model.transcribe(audio_path)
-            transcription = " ".join([segment.text for segment in segments])
+        # More robust whisper model type detection
+        if hasattr(whisper_model, 'transcribe'):
+            # Check if it's faster-whisper by looking for specific attributes
+            if hasattr(whisper_model, 'model') and hasattr(whisper_model, 'feature_extractor'):
+                # Using faster-whisper
+                segments, info = whisper_model.transcribe(audio_path, language="en")
+                transcription = " ".join([segment.text for segment in segments])
+            else:
+                # Using openai-whisper
+                result = whisper_model.transcribe(audio_path)
+                transcription = result["text"]
         else:
-            # Using openai-whisper
-            result = whisper_model.transcribe(audio_path)
-            transcription = result["text"]
+            # Fallback
+            return "This is a voice sample for cloning."
         
         # Clean up transcription
         transcription = transcription.strip()
@@ -575,22 +599,19 @@ def transcribe_audio(audio_path):
         print(f"❌ Transcription failed: {e}")
         return "This is a voice sample for cloning."
 
-def save_temp_audio_fixed(audio_data, sample_rate):
-    """Enhanced version that handles any audio format"""
-    return save_temp_audio_robust(audio_data, sample_rate)
-
-def load_audio_file_robust(file_path, target_sample_rate=24000):
-    """
-    Load any audio file and convert to standard format
-    """
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Audio file not found: {file_path}")
-    
-    return convert_audio_to_standard_format(file_path, target_sample_rate)
-
 def create_voice_reference_txt(audio_path, transcript_sample=None):
     """Create a corresponding .txt file for the voice reference with auto-transcription"""
-    txt_path = audio_path.replace('.wav', '.txt')
+    # Robust extension handling - handles all common audio extensions case-insensitively
+    base_path = audio_path
+    audio_extensions = ['.wav', '.WAV', '.mp3', '.MP3', '.flac', '.FLAC', '.m4a', '.M4A', '.ogg', '.OGG']
+
+    
+    for ext in audio_extensions:
+        if audio_path.endswith(ext):
+            base_path = audio_path[:-len(ext)]
+            break
+    
+    txt_path = base_path + '.txt'
     
     if transcript_sample is None:
         # Auto-transcribe the audio
@@ -601,6 +622,34 @@ def create_voice_reference_txt(audio_path, transcript_sample=None):
     
     print(f"📝 Created voice reference text: {txt_path}")
     return txt_path
+
+def robust_txt_path_creation(audio_path):
+    """
+    Given an audio file path, returns the corresponding .txt path,
+    handling all common audio extensions case-insensitively.
+    """
+    base_path = audio_path
+    audio_extensions = ['.wav', '.WAV', '.mp3', '.MP3', '.flac', '.FLAC', '.m4a', '.M4A', '.ogg', '.OGG']
+    for ext in audio_extensions:
+        if audio_path.endswith(ext):
+            base_path = audio_path[:-len(ext)]
+            break
+    return base_path + '.txt'
+
+def robust_file_cleanup(files):
+    """
+    Safely delete a list of files (or a single file path), ignoring errors if files do not exist.
+    """
+    if not files:
+        return
+    if isinstance(files, str):
+        files = [files]
+    for f in files:
+        if f and isinstance(f, str) and os.path.exists(f):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 def save_temp_audio(audio_data, sample_rate):
     """Save numpy audio data to temporary file and return path"""
@@ -803,17 +852,28 @@ def generate_basic(
     # Prepare system message
     system_content = "Generate audio following instruction."
     if scene_description and scene_description.strip():
-        system_content += f"\n\n<|scene_desc_start|>\n{scene_description}\n<|scene_desc_end|>"
+        system_content += f" <|scene_desc_start|>\n{scene_description}\n<|scene_desc_end|>"
     
     # Handle voice selection using the same method as voice cloning tab
     if voice_prompt and voice_prompt != "None (Smart Voice)":
         ref_audio_path = get_voice_path(voice_prompt)
         if ref_audio_path and os.path.exists(ref_audio_path):
-            # Create dummy txt file if it doesn't exist
-            txt_path = ref_audio_path.replace('.wav', '.txt').replace('.mp3', '.txt')
+            # Create corresponding txt file path using robust method
+            txt_path = robust_txt_path_creation(ref_audio_path)
+            
             if not os.path.exists(txt_path):
-                with open(txt_path, 'w', encoding='utf-8') as f:
-                    f.write("This is a voice sample.")
+                # Auto-transcribe the audio file instead of creating dummy text
+                try:
+                    transcription = transcribe_audio(ref_audio_path)
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(transcription)
+                    print(f"📝 Auto-transcribed and created: {txt_path}")
+                except Exception as e:
+                    print(f"⚠️ Failed to transcribe {ref_audio_path}: {e}")
+                    # Fallback to dummy text only if transcription fails
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write("This is a voice sample.")
+                    print(f"📝 Created fallback text file: {txt_path}")
             
             # Use the same pattern as working voice cloning
             messages = [
@@ -866,11 +926,14 @@ def generate_voice_clone(
         torch.manual_seed(seed)
         np.random.seed(seed)
     
-    # Save uploaded audio to temporary file using enhanced method
-    temp_audio_path = enhanced_save_temp_audio_fixed(uploaded_voice)
+    # Initialize temp paths to None to avoid NameError
+    temp_audio_path = None
     temp_txt_path = None
     
     try:
+        # Save uploaded audio to temporary file using enhanced method
+        temp_audio_path = enhanced_save_temp_audio_fixed(uploaded_voice)
+        
         # Create corresponding txt file with auto-transcription
         temp_txt_path = create_voice_reference_txt(temp_audio_path)  # Auto-transcribes!
         
@@ -897,10 +960,8 @@ def generate_voice_clone(
         return output_path
     
     finally:
-        # Clean up temporary files
-        for path in [temp_audio_path, temp_txt_path]:
-            if path and os.path.exists(path):
-                os.unlink(path)
+        # Clean up temporary files using robust cleanup
+        robust_file_cleanup([temp_audio_path, temp_txt_path])
 
 def generate_voice_clone_alternative(
     transcript,
@@ -925,10 +986,13 @@ def generate_voice_clone_alternative(
         torch.manual_seed(seed)
         np.random.seed(seed)
     
-    # Save uploaded audio to temporary file using enhanced method
-    temp_audio_path = enhanced_save_temp_audio_fixed(uploaded_voice)
+    # Initialize temp path to None to avoid NameError
+    temp_audio_path = None
     
     try:
+        # Save uploaded audio to temporary file using enhanced method
+        temp_audio_path = enhanced_save_temp_audio_fixed(uploaded_voice)
+        
         # Try the voice_ref format (this might be specific to newer versions)
         system_content = "Generate audio following instruction."
         
@@ -950,9 +1014,8 @@ def generate_voice_clone_alternative(
         return output_path
     
     finally:
-        # Clean up temporary file
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.unlink(temp_audio_path)
+        # Clean up temporary file using robust cleanup
+        robust_file_cleanup(temp_audio_path)
 
 def generate_longform(
     transcript,
@@ -1000,11 +1063,20 @@ def generate_longform(
             ref_audio_path = get_voice_path(voice_prompt)
             if ref_audio_path and os.path.exists(ref_audio_path):
                 voice_ref_path = ref_audio_path
-                # Ensure txt file exists for predefined voices
-                txt_path = ref_audio_path.replace('.wav', '.txt').replace('.mp3', '.txt')
+                # Ensure txt file exists for predefined voices - use robust path creation
+                txt_path = robust_txt_path_creation(ref_audio_path)
+                
                 if not os.path.exists(txt_path):
-                    with open(txt_path, 'w', encoding='utf-8') as f:
-                        f.write("This is a voice sample.")
+                    # Auto-transcribe instead of dummy text
+                    try:
+                        transcription = transcribe_audio(ref_audio_path)
+                        with open(txt_path, 'w', encoding='utf-8') as f:
+                            f.write(transcription)
+                    except Exception as e:
+                        print(f"⚠️ Failed to transcribe {ref_audio_path}: {e}")
+                        with open(txt_path, 'w', encoding='utf-8') as f:
+                            f.write("This is a voice sample.")
+                
                 # Read transcription
                 if os.path.exists(txt_path):
                     with open(txt_path, 'r', encoding='utf-8') as f:
@@ -1015,7 +1087,7 @@ def generate_longform(
         # Prepare system message
         system_content = "Generate audio following instruction."
         if scene_description and scene_description.strip():
-            system_content += f"\n\n<|scene_desc_start|>\n{scene_description}\n<|scene_desc_end|>"
+            system_content += f" <|scene_desc_start|>\n{scene_description}\n<|scene_desc_end|>"
         
         # Generate audio for each chunk
         full_audio = []
@@ -1093,14 +1165,8 @@ def generate_longform(
             return None
     
     finally:
-        # Clean up temporary files
-        cleanup_files = [temp_audio_path, temp_txt_path]
-        for path in cleanup_files:
-            if path and os.path.exists(path):
-                try:
-                    os.unlink(path)
-                except:
-                    pass  # Ignore cleanup errors
+        # Clean up temporary files using robust cleanup
+        robust_file_cleanup([temp_audio_path, temp_txt_path, first_chunk_audio_path])
 
 # IMPROVED HANDLER FUNCTION FOR MULTI-SPEAKER
 def handle_multi_speaker_generation(
@@ -1211,17 +1277,25 @@ def generate_multi_speaker(
                         if ref_audio_path and os.path.exists(ref_audio_path):
                             voice_refs[speaker_key] = ref_audio_path
                             print(f"📁 Setup voice reference for {speaker_key}: {ref_audio_path}")
-                            # Ensure txt file exists
-                            txt_path = ref_audio_path.replace('.wav', '.txt').replace('.mp3', '.txt')
+                            # Ensure txt file exists - use robust extension handling
+                            txt_path = robust_txt_path_creation(ref_audio_path)
+                            
                             if not os.path.exists(txt_path):
-                                with open(txt_path, 'w', encoding='utf-8') as f:
-                                    f.write("This is a voice sample.")
+                                # Auto-transcribe instead of dummy text
+                                try:
+                                    transcription = transcribe_audio(ref_audio_path)
+                                    with open(txt_path, 'w', encoding='utf-8') as f:
+                                        f.write(transcription)
+                                except Exception as e:
+                                    print(f"⚠️ Failed to transcribe {ref_audio_path}: {e}")
+                                    with open(txt_path, 'w', encoding='utf-8') as f:
+                                        f.write("This is a voice sample.")
         
         # Prepare system message - SAME AS WORKING VOICE CLONING
         system_content = "Generate audio following instruction."
         
         if scene_description and scene_description.strip():
-            system_content += f"\n\n<|scene_desc_start|>\n{scene_description}\n<|scene_desc_end|>"
+            system_content += f" <|scene_desc_start|>\n{scene_description}\n<|scene_desc_end|>"
         
         # Generate audio for each speaker segment
         full_audio = []
@@ -1374,14 +1448,8 @@ def generate_multi_speaker(
         raise e
     
     finally:
-        # Clean up temporary files
-        for temp_file in temp_files:
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                    print(f"🧹 Cleaned up: {temp_file}")
-                except Exception as e:
-                    print(f"⚠️ Could not clean up {temp_file}: {e}")
+        # Clean up temporary files using robust cleanup
+        robust_file_cleanup(temp_files)
 
 def refresh_voice_list():
     updated_voices = get_all_available_voices()
@@ -1958,3 +2026,4 @@ if __name__ == "__main__":
     print("🚀 Starting Higgs Audio v2 Generator...")
     print("✨ Features: Voice Cloning, Multi-Speaker, Caching, Auto-Transcription, Enhanced Audio Processing")
     demo.launch()
+
